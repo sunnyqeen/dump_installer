@@ -410,8 +410,8 @@ int main(void) {
     char mount_lnk_path[PATH_MAX];
     char param_json_path[PATH_MAX];
 
-    notify("Welcome To Dump Installer 1.01 Beta");
-    printf("Welcome To Dump Installer 1.01 Beta\n");
+    notify("Welcome To Dump Installer 1.03 Beta");
+    printf("Welcome To Dump Installer 1.03 Beta\n");
 
     if (!getcwd(cwd, sizeof(cwd))) {
         printf("Error: Unable to determine working directory\n");
