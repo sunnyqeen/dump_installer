@@ -31,6 +31,7 @@ all: $(ELF)
 
 $(ELF): main.cpp
 	$(CXX) $(CFLAGS) -o $@ $^
+	strip $@
 
 clean:
 	rm -f $(ELF)
