@@ -45,6 +45,13 @@ async function scanApps() {
 
       for (let entry of autoScanParentDirEntryList.data) {
         subjobs.push((async () => {
+          if (!DirectoryListing.isDir(entry)) {
+            if (entry.name.endsWith(".ffpkg") || entry.name.endsWith(".exfat") || entry.name.endsWith(".ufs")) {
+              apps.push(path + entry.name);
+            }
+            return;
+          }
+
           let appDirEntries = await ApiClient.fsListDir(path + entry.name);
           if (appDirEntries.data === null) {
             return;
@@ -80,8 +87,12 @@ async function scanApps() {
 
 async function getAppInfo(path) {
   let storage = 'INT';
-  let appId = path.substring(path.lastIndexOf("/") + 1).split('-')[0];
+  let appId = path.substring(path.lastIndexOf("/") + 1);
   let title = appId;
+  let match = title.match(/PPSA\d{5}/);
+  if (match !== null) {
+    appId = match[0];
+  }
 
   if (path.startsWith('/mnt/usb')) {
     storage = 'USB';
@@ -130,8 +141,12 @@ async function isAppInstalled(appId, path) {
   try {
     const LINK_URL = baseURL + '/fs/user/app/' + appId + '/mount.lnk';
     const resp = await fetch(LINK_URL);
-    const txt = await resp.text();
+    let txt = await resp.text();
+	const index = txt.indexOf(':');
 
+	if (index > 0) {
+	  txt = txt.substring(index + 1);
+	}
     return txt === path;
   } catch {}
 
@@ -158,14 +173,18 @@ async function main() {
             secondaryText: storage,
             imgPath: baseURL + '/fs/' + app + '/sce_sys/icon0.png',
             onclick: async () => {
-              await ApiClient.launchApp(PAYLOAD, null, null, app, true);
+              if (app.endsWith(".ffpkg") || app.endsWith(".exfat") || app.endsWith(".ufs")) {
+                await ApiClient.launchApp(PAYLOAD, [PAYLOAD, app], null, null, true);
+              } else {
+                await ApiClient.launchApp(PAYLOAD, null, null, app, true);
+              }
             }
           });
         } else {
           items.push({
             mainText: title,
             secondaryText: storage + ' - Installed',
-            imgPath: baseURL + '/fs/' + app + '/sce_sys/icon0.png',
+            imgPath: baseURL + '/fs/' + 'user/app/' + appId + '/sce_sys/icon0.png',
             onclick: async () => {
               await launchAppById(appId);
             },
@@ -173,7 +192,11 @@ async function main() {
               {
                 text: "Install",
                 onclick: async () => {
-                  await ApiClient.launchApp(PAYLOAD, null, null, app, true);
+                  if (app.endsWith(".ffpkg") || app.endsWith(".exfat") || app.endsWith(".ufs")) {
+                    await ApiClient.launchApp(PAYLOAD, [PAYLOAD, app], null, null, true);
+                  } else {
+                    await ApiClient.launchApp(PAYLOAD, null, null, app, true);
+                  }
                 }
               }
             ]
@@ -190,6 +213,18 @@ async function main() {
               const app = await pickDirectory('', 'Select Game Directory...');
               if (app) {
                 await ApiClient.launchApp(PAYLOAD, null, null, app, true);
+              }
+            }
+          }
+        );
+        items.push(
+          {
+            mainText: '++',
+            secondaryText: 'Add Game (ffpkg)',
+            onclick: async () => {
+              const app = await pickFile('', 'Select Game Image(.ffpkg|.exfat|.ufs)...');
+              if (app.endsWith(".ffpkg") || app.endsWith(".exfat") || app.endsWith(".ufs")) {
+                await ApiClient.launchApp(PAYLOAD, [PAYLOAD, app], null, null, true);
               }
             }
           }
