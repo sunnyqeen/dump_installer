@@ -475,6 +475,13 @@ int main(int argc, const char* argv[]) {
 
         if (find_mountdev(image_file_path, dev_path, sizeof(dev_path))) {
             const char* mount_point = find_mountpoint(dev_path);
+            const char sysex[] = "/system_ex/app/";
+            if (mount_point && strncmp(mount_point, sysex, sizeof(sysex) - 1) == 0) {
+                // unlink old mount.lnk
+                snprintf(mount_lnk_path, sizeof(mount_lnk_path), "/user/app/%s/mount.lnk", mount_point + sizeof(sysex) - 1);
+                unlink(mount_lnk_path);
+                printf("unlink %s\n", mount_lnk_path);
+            }
             unmount_ufs_image(mount_point ? mount_point : tmp_mount, dev_path);
             memset(dev_path, 0, sizeof(dev_path));
         }
