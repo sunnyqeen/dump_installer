@@ -214,18 +214,70 @@ static int get_title_id(const char* base_path, char* title_id, size_t size) {
 }
 
 // IMAGE TYPE DETECTION
-// Read first 16 bytes of the image file - if all are 0x00 it is a UFS image, otherwise PFS
-static bool detect_is_ufs(const char* file_path) {
-    FILE* f = fopen(file_path, "rb");
-    if (!f) return false;
-    uint8_t buf[16] = {};
-    size_t n = fread(buf, 1, sizeof(buf), f);
-    fclose(f);
-    if (n < 16) return false;
-    for (int i = 0; i < 16; i++) {
-        if (buf[i] != 0x00) return false;
+#define UFS2_MAGIC          0x19540119
+#define SBLOCK_UFS2_OFFSET  65536      // 64 KB
+// Offsets within the superblock
+#define OFFSET_UFS_FSIZE        52         // fs_fsize (int32_t)
+#define OFFSET_UFS_FSBTODB      100        // fs_fsbtodb (int32_t)
+#define OFFSET_UFS_MAGIC        1372       // fs_magic (int32_t)
+
+static int32_t detect_is_ufs(const char* file_path) {
+    FILE* fp = fopen(file_path, "rb");
+    if (!fp) return 0;
+    int32_t fsize = 0, fsbtodb = 0, magic = 0;
+
+    // Verify Magic Number
+    if (fseek(fp, SBLOCK_UFS2_OFFSET + OFFSET_UFS_MAGIC, SEEK_SET) == 0)
+        fread(&magic, 4, 1, fp);
+    if (magic != UFS2_MAGIC) {
+        printf("Not a valid UFS image (Magic mismatch).\n");
+        fclose(fp);
+        return 0;
     }
-    return true;
+
+    // Read fragment size and shift count
+    if (fseek(fp, SBLOCK_UFS2_OFFSET + OFFSET_UFS_FSIZE, SEEK_SET) == 0)
+        fread(&fsize, 4, 1, fp);
+
+    if (fseek(fp, SBLOCK_UFS2_OFFSET + OFFSET_UFS_FSBTODB, SEEK_SET) == 0)
+        fread(&fsbtodb, 4, 1, fp);
+
+    // Calculate Sector Size
+    // sector_size = fsize / (2^fsbtodb)
+    int32_t sector_size = fsize < 512 ? 0 : (fsize >> fsbtodb);
+
+    fclose(fp);
+    return sector_size;
+}
+
+#define OFFSET_EXFAT_MAGIC 3
+#define OFFSET_EXFAT_SHIFT 108
+static int32_t detect_is_exfat(const char *file_path) {
+    FILE *fp = fopen(file_path, "rb");
+    if (!fp) return 0;
+
+    char magic[9] = {0};
+    uint8_t shift = 0;
+
+    // Verify Magic Number ("EXFAT   " at offset 3)
+    if (fseek(fp, OFFSET_EXFAT_MAGIC, SEEK_SET) == 0)
+        fread(magic, 1, 8, fp);
+    if (strncmp(magic, "EXFAT   ", 8) != 0) {
+        printf("Not a valid EXFAT image (Magic mismatch).\n");
+        fclose(fp);
+        return 0;
+    }
+
+    // Read BytesPerSectorShift at offset 108
+    if (fseek(fp, OFFSET_EXFAT_SHIFT, SEEK_SET) == 0)
+        fread(&shift, 1, 1, fp);
+
+    // Calculation: 2^shift
+    // Valid values for exFAT are 9 (512 bytes) through 12 (4096 bytes)
+    int32_t sector_size = shift < 9 ? 0 : (1 << shift);
+
+    fclose(fp);
+    return sector_size;
 }
 
 static int is_image_file(const char* name) {
@@ -237,7 +289,7 @@ static int is_image_file(const char* name) {
     else return 0;
 }
 
-static int find_image_in_dir(const char* dir, char* out, size_t out_sz, bool* is_ufs_out) {
+static int find_image_in_dir(const char* dir, char* out, size_t out_sz) {
     DIR* d = opendir(dir); if (!d) return 0;
     struct dirent* e;
     int image = 0;
@@ -245,8 +297,6 @@ static int find_image_in_dir(const char* dir, char* out, size_t out_sz, bool* is
         if (e->d_name[0] == '.') continue;
         if (!(image = is_image_file(e->d_name))) continue;
         snprintf(out, out_sz, "%s/%s", dir, e->d_name);
-        if (image == IMAGE_FFPKG)
-            *is_ufs_out = detect_is_ufs(out);
         closedir(d); return image;
     }
     closedir(d); return 0;
@@ -300,7 +350,7 @@ static const char* find_mountpoint(const char* src) {
 }
 
 // Image MOUNT - mount ffpkg image directly to the provided mount_point
-static bool mount_ufs_image(const char* file_path, const char* mount_point, const char* fs, char* dev_path, size_t dev_path_len) {
+static bool mount_ufs_image(const char* file_path, const char* mount_point, const char* fs, int sector_size, char* dev_path, size_t dev_path_len) {
     struct stat st;
     if (stat(file_path, &st) != 0) {
         notify("stat failed: %s", strerror(errno));
@@ -343,7 +393,7 @@ static bool mount_ufs_image(const char* file_path, const char* mount_point, cons
         mdio.md_type       = MD_VNODE;
         mdio.md_file       = (char*)file_path;
         mdio.md_mediasize  = st.st_size;
-        mdio.md_sectorsize = 512;
+        mdio.md_sectorsize = sector_size;
         mdio.md_options    = MD_AUTOUNIT;
 
         ret = ioctl(mdctl, (unsigned long)MDIOCATTACH, &mdio);
@@ -442,7 +492,7 @@ int main(int argc, const char* argv[]) {
     char image_file[PATH_MAX] = {};
     char tmp_mount[PATH_MAX] = {0};
     char dev_path[32] = {0};
-    bool is_ufs = false;
+    int fs_sector_size = 0;
     int has_image = 0;
     const char* fs = "nullfs";
 
@@ -452,22 +502,31 @@ int main(int argc, const char* argv[]) {
             notify("Not supported image file");
             return -1;
         }
-        is_ufs = detect_is_ufs(image_file_path);
     } else {
-        has_image = find_image_in_dir(cwd, image_file, sizeof(image_file), &is_ufs);
+        has_image = find_image_in_dir(cwd, image_file, sizeof(image_file));
         image_file_path = image_file;
     }
 
-    if (has_image == IMAGE_FFPKG && !is_ufs) {
-        notify("Error: Only UFS FFPKG images are supported");
-        printf("Error: Only UFS FFPKG images are supported\n");
-        return -1;
-    } else if (has_image) {
-        fs = (has_image == IMAGE_EXFAT) ? "exfatfs" : "ufs";
+    if (has_image == IMAGE_FFPKG || has_image == IMAGE_UFS) {
+        fs_sector_size = detect_is_ufs(image_file_path);
+        if (fs_sector_size <= 0) {
+            notify("Error: Invalid UFS FFPKG image");
+            printf("Error: Invalid UFS FFPKG image\n");
+            return -1;
+        }
+        fs = "ufs";
+    } else if (has_image == IMAGE_EXFAT) {
+        fs_sector_size = detect_is_exfat(image_file_path);
+        if (fs_sector_size <= 0) {
+            notify("Error: Invalid EXFAT image");
+            printf("Error: Invalid EXFAT image\n");
+            return -1;
+        }
+        fs = "exfatfs";
     }
 
     if (has_image) {
-        notify("Image: %s", strrchr(image_file_path, '/') ? strrchr(image_file_path, '/') + 1 : image_file_path);
+        notify("Image: %s SectorSize: %d", strrchr(image_file_path, '/') ? strrchr(image_file_path, '/') + 1 : image_file_path, fs_sector_size);
 
         // tmp mount to /data/di_tmp
         snprintf(tmp_mount, sizeof(tmp_mount), "%s/%s", "/data", "di_tmp");
@@ -486,7 +545,7 @@ int main(int argc, const char* argv[]) {
             memset(dev_path, 0, sizeof(dev_path));
         }
 
-        if (!mount_ufs_image(image_file_path, tmp_mount, fs, dev_path, sizeof(dev_path))) {
+        if (!mount_ufs_image(image_file_path, tmp_mount, fs, fs_sector_size, dev_path, sizeof(dev_path))) {
             notify("Image mount failed -> %s (errno %d)", tmp_mount, errno);
             printf("Error: Failed to mount application (errno %d)\n", errno);
             unmount_ufs_image(tmp_mount, dev_path);
@@ -518,7 +577,7 @@ int main(int argc, const char* argv[]) {
 
     if (has_image) {
         // Image - mount ffpkg image directly to /system_ex/app/<title_id>
-        if (!mount_ufs_image(image_file_path, system_ex_app, fs, dev_path, sizeof(dev_path))) {
+        if (!mount_ufs_image(image_file_path, system_ex_app, fs, fs_sector_size, dev_path, sizeof(dev_path))) {
             notify("Image mount failed -> %s (errno %d)", system_ex_app, errno);
             printf("Error: Failed to mount application (errno %d)\n", errno);
             unmount_ufs_image(system_ex_app, dev_path);
