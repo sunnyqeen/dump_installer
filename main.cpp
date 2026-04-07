@@ -45,6 +45,7 @@ static void notify(const char* fmt, ...) {
     vsnprintf(req.message, sizeof(req.message) - 1, fmt, args);
     va_end(args);
     sceKernelSendNotificationRequest(0, &req, sizeof(req), 0);
+    printf("%s\n", req.message);
 }
 
 // MOUNT HELPERS
@@ -462,7 +463,7 @@ static bool mount_ufs_image(const char* file_path, const char* mount_point, cons
     snprintf(dev_path, dev_path_len, "/dev/md%u", mdio.md_unit);
     close(mdctl);
 
-    //notify("%s image attached as %s", fs, dev_path);
+    printf("%s image attached as %s\n", fs, dev_path);
 
     struct iovec iov_ufs[] = {
         IOVEC_ENTRY("fstype"),    IOVEC_ENTRY("ufs"),
@@ -490,16 +491,18 @@ static bool mount_ufs_image(const char* file_path, const char* mount_point, cons
 
     // Prefer RW first for install compatibility
     ret = nmount(iov, iov_count, 0);
+    int ro = 0;
     if (ret != 0) {
-        notify("nmount rw failed: %s - falling back to rdonly", strerror(errno));
+        printf("nmount rw failed: %s - falling back to rdonly\n", strerror(errno));
         ret = nmount(iov, iov_count, MNT_RDONLY);
         if (ret != 0) {
             notify("nmount ufs failed: %s", strerror(errno));
             return false;
         }
+        ro = 1;
     }
 
-    //notify("Image mounted OK -> %s (rw preferred)", mount_point);
+    printf("Image mounted OK -> %s (%s)\n", mount_point, ro ? "ro" : "rw");
     return true;
 }
 
@@ -532,7 +535,6 @@ int main(int argc, const char* argv[]) {
     const char* image_file_path = NULL;;
 
     notify("Dump Installer 1.08 Beta - UFS/EXFAT image Support");
-    printf("Dump Installer 1.08 Beta - UFS/EXFAT image Support\n");
 
     if (!getcwd(cwd, sizeof(cwd))) {
         printf("Error: Unable to determine working directory\n");
@@ -567,7 +569,6 @@ int main(int argc, const char* argv[]) {
         fs_sector_size = detect_is_ufs(image_file_path);
         if (fs_sector_size <= 0) {
             notify("Error: Invalid UFS FFPKG image");
-            printf("Error: Invalid UFS FFPKG image\n");
             return -1;
         }
         fs = "ufs";
@@ -575,7 +576,6 @@ int main(int argc, const char* argv[]) {
         fs_sector_size = detect_is_exfat(image_file_path);
         if (fs_sector_size <= 0) {
             notify("Error: Invalid EXFAT image");
-            printf("Error: Invalid EXFAT image\n");
             return -1;
         }
         fs = "exfatfs";
@@ -603,7 +603,6 @@ int main(int argc, const char* argv[]) {
 
         if (!mount_ufs_image(image_file_path, tmp_mount, fs, fs_sector_size, dev_path, sizeof(dev_path))) {
             notify("Image mount failed -> %s (errno %d)", tmp_mount, errno);
-            printf("Error: Failed to mount application (errno %d)\n", errno);
             unmount_ufs_image(tmp_mount, dev_path);
             return -1;
         }
@@ -637,7 +636,6 @@ int main(int argc, const char* argv[]) {
     }
 
     notify("Installing %s, please wait...", title_id);
-    printf("Installing %s, please wait...\n", title_id);
 
     snprintf(system_ex_app, sizeof(system_ex_app), "/system_ex/app/%s", title_id);
     mkdir(system_ex_app, 0755);
@@ -647,15 +645,13 @@ int main(int argc, const char* argv[]) {
         // Image - mount ffpkg image directly to /system_ex/app/<title_id>
         if (!mount_ufs_image(image_file_path, system_ex_app, fs, fs_sector_size, dev_path, sizeof(dev_path))) {
             notify("Image mount failed -> %s (errno %d)", system_ex_app, errno);
-            printf("Error: Failed to mount application (errno %d)\n", errno);
             unmount_ufs_image(system_ex_app, dev_path);
             return -1;
         }
     } else {
         // Folder mode - mount cwd via nullfs to /system_ex/app/<title_id>
         if (mount_nullfs(cwd, system_ex_app) != 0) {
-            notify("nullfs mount failed -> %s (errno %d)", system_ex_app, errno);
-            printf("Error: Failed to mount application (errno %d)\n", errno);
+            notify("Folder mount failed -> %s (errno %d)", system_ex_app, errno);
             return -1;
         }
     }
@@ -691,8 +687,6 @@ int main(int argc, const char* argv[]) {
     if (install_ret != 0) {
         notify("sceAppInstUtilAppInstallTitleDir failed: ret=0x%08x errno=%d (%s)",
                install_ret, errno, strerror(errno));
-        printf("Install failed: ret=0x%08x errno=%d (%s)\n",
-               install_ret, errno, strerror(errno));
         return -1;
     }
 
@@ -714,13 +708,11 @@ int main(int argc, const char* argv[]) {
     }
 
     notify("Fixing Config (snd0), please wait...");
-    printf("Fixing Config, please wait...\n");
 
     sleep(3);
     update_snd0info(title_id);
 
     notify("%s installed and ready to use!", title_id);
-    printf("%s installed and ready to use!\n", title_id);
     printf("The icon should now appear on the home screen.\n");
 
     return 0;
