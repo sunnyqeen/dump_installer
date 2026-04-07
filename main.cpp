@@ -213,6 +213,61 @@ static int get_title_id(const char* base_path, char* title_id, size_t size) {
     return read_title_id_from_sfo(path, title_id, size);
 }
 
+// ---------------- PATCH DRM (PS5 only) ----------------
+static int fix_application_drm_type(const char* path) {
+    FILE* f = fopen(path, "rb");
+    if (!f) return -1;
+
+    fseek(f, 0, SEEK_END);
+    long len = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    if (len <= 0 || len > 1024 * 1024) {
+        fclose(f);
+        return -1;
+    }
+
+    char* buf = (char*)malloc(len + 1);
+    if (!buf) { fclose(f); return -1; }
+
+    fread(buf, 1, len, f);
+    buf[len] = '\0';
+    fclose(f);
+
+    const char* key = "\"applicationDrmType\"";
+    char* p = strstr(buf, key);
+    if (!p) { free(buf); return 0; }
+
+    char* colon = strchr(p + strlen(key), ':');
+    char* q1 = colon ? strchr(colon, '"') : NULL;
+    char* q2 = q1 ? strchr(q1 + 1, '"') : NULL;
+    if (!q1 || !q2) { free(buf); return -1; }
+
+    if ((q2 - q1 - 1) == strlen("standard") &&
+        !strncmp(q1 + 1, "standard", strlen("standard"))) {
+        free(buf);
+        return 0;
+    }
+
+    size_t new_len = (q1 - buf) + 1 + strlen("standard") + 1 + strlen(q2 + 1);
+    char* out = (char*)malloc(new_len + 1);
+    if (!out) { free(buf); return -1; }
+
+    memcpy(out, buf, q1 - buf + 1);
+    memcpy(out + (q1 - buf + 1), "standard", strlen("standard"));
+    strcpy(out + (q1 - buf + 1 + strlen("standard")), q2);
+
+    f = fopen(path, "wb");
+    if (!f) { free(buf); free(out); return -1; }
+
+    fwrite(out, 1, strlen(out), f);
+    fclose(f);
+
+    free(buf);
+    free(out);
+    return 1;
+}
+
 // IMAGE TYPE DETECTION
 #define UFS2_MAGIC          0x19540119
 #define SBLOCK_UFS2_OFFSET  65536      // 64 KB
@@ -473,6 +528,7 @@ int main(int argc, const char* argv[]) {
     char user_app_dir[PATH_MAX];
     char user_sce_sys[PATH_MAX];
     char mount_lnk_path[PATH_MAX];
+    char param_json_path[PATH_MAX];
     const char* image_file_path = NULL;;
 
     notify("Dump Installer 1.08 Beta - UFS/EXFAT image Support");
@@ -558,6 +614,12 @@ int main(int argc, const char* argv[]) {
             return -1;
         }
 
+        snprintf(param_json_path, sizeof(param_json_path),
+                 "%s/sce_sys/param.json", tmp_mount);
+
+        if (fix_application_drm_type(param_json_path) > 0)
+            printf("applicationDrmType patched to standard\n");
+
         unmount(tmp_mount, MNT_FORCE);;
     } else {
         // Folder mode - derive title_id from sce_sys on disk
@@ -566,6 +628,12 @@ int main(int argc, const char* argv[]) {
             notify("Failed to read Title ID from %s/sce_sys", cwd);
             return -1;
         }
+
+        snprintf(param_json_path, sizeof(param_json_path),
+                 "%s/sce_sys/param.json", cwd);
+
+        if (fix_application_drm_type(param_json_path) > 0)
+            printf("applicationDrmType patched to standard\n");
     }
 
     notify("Installing %s, please wait...", title_id);
