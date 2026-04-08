@@ -25,7 +25,7 @@ endif
 
 ELF := dump_installer.elf
 
-CFLAGS := -Wall -Werror -lSceSystemService -lSceUserService -lSceAppInstUtil -lsqlite3
+CFLAGS := -Wall -Werror -lSceIpmi -lSceAppInstUtil -lsqlite3
 
 all: $(ELF)
 

@@ -1,4 +1,6 @@
 #include <dirent.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,6 +15,8 @@
 #include <limits.h>
 #include <sqlite3.h>
 
+#include <ps5/kernel.h>
+
 #define IOVEC_ENTRY(x) { (void*)(x), (x) ? strlen(x) + 1 : 0 }
 #define IOVEC_SIZE(x)  (sizeof(x) / sizeof(struct iovec))
 
@@ -24,6 +28,7 @@ typedef struct notify_request {
 extern "C" {
     int sceAppInstUtilInitialize(void);
     int sceAppInstUtilAppInstallTitleDir(const char* title_id, const char* install_path, void* reserved);
+    int sceAppInstUtilAppInstallAll(void* reserved);
     int sceKernelSendNotificationRequest(int, notify_request_t*, size_t, int);
 }
 
@@ -399,6 +404,44 @@ static int fix_application_drm_type(const char* path) {
     return 1;
 }
 
+// ---------------- INSTALL (DYNAMIC RESOLVE) ----------------
+static int install_app(const char* title_id, const char* dir) {
+    int (*sceAppInstUtilAppInstallTitleDir)(const char*, const char*, void*) = 0;
+    const char* nid = "Wudg3Xe3heE";
+    uint32_t handle;
+    int ret;
+
+	if (!kernel_dynlib_handle(-1, "libSceAppInstUtil.sprx", &handle)) {
+		sceAppInstUtilAppInstallTitleDir =
+			(int (*)(const char*, const char*, void*))
+			(uintptr_t)kernel_dynlib_resolve(-1, handle, nid);
+	}
+
+    if (sceAppInstUtilAppInstallTitleDir) {
+        ret = sceAppInstUtilAppInstallTitleDir(title_id, dir, 0);
+        if (ret == 0) {
+            printf("Used AppInstallTitleDir\n");
+            return 0;
+        }
+
+        printf("AppInstallTitleDir failed: 0x%X\n", ret);
+    } else {
+        printf("AppInstallTitleDir not available\n");
+    }
+
+    // Fallback → required for 12.00+
+    printf("Falling back to AppInstallAll...\n");
+
+    ret = sceAppInstUtilAppInstallAll(0);
+    if (ret == 0) {
+        printf("Used AppInstallAll\n");
+        return 0;
+    }
+
+    printf("AppInstallAll failed: 0x%X\n", ret);
+    return ret;
+}
+
 // ---------------- MAIN ----------------
 int main(void) {
     char cwd[PATH_MAX];
@@ -410,8 +453,8 @@ int main(void) {
     char mount_lnk_path[PATH_MAX];
     char param_json_path[PATH_MAX];
 
-    notify("Welcome To Dump Installer 1.03 Beta");
-    printf("Welcome To Dump Installer 1.03 Beta\n");
+    notify("Welcome To Dump Installer 1.04 Beta");
+    printf("Welcome To Dump Installer 1.04 Beta\n");
 
     if (!getcwd(cwd, sizeof(cwd))) {
         printf("Error: Unable to determine working directory\n");
@@ -464,13 +507,13 @@ int main(void) {
 
     copy_sce_sys_to_appmeta(src_sce_sys, title_id);
 	
-    sceAppInstUtilInitialize();
-    if (sceAppInstUtilAppInstallTitleDir(title_id, "/user/app/", 0)) {
+	sceAppInstUtilInitialize();
+	if (install_app(title_id, "/user/app/")) {
         notify("Application install failed");
         printf("Error: Application install failed\n");
         return -1;
     }
-
+	
     snprintf(mount_lnk_path, sizeof(mount_lnk_path), "/user/app/%s/mount.lnk", title_id);
 
     FILE* f = fopen(mount_lnk_path, "w");
