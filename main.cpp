@@ -687,6 +687,11 @@ static int mount_ufs_image(const char* file_path, const char* mount_point, const
 }
 
 static void unmount_ufs_image(const char* mount_point, const char* dev_path) {
+    struct statfs sfs;
+    if (!dev_path && statfs(mount_point, &sfs) == 0) {
+        dev_path = sfs.f_mntfromname;
+    }
+
     unmount(mount_point, MNT_FORCE);
 
     struct md_ioctl mdio = {0};
@@ -846,7 +851,7 @@ int main(int argc, const char* argv[]) {
 
     snprintf(system_ex_app, sizeof(system_ex_app), "/system_ex/app/%s", title_id);
     mkdir(system_ex_app, 0755);
-    unmount(system_ex_app, MNT_FORCE);
+    unmount_ufs_image(system_ex_app, NULL);
 
     if (has_image) {
         // Image - mount ffpkg image directly to /system_ex/app/<title_id>
